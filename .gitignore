@@ -1,8 +1,0 @@
-*.apk
-*.jks
-*.keystore
-*.p12
-*.pass
-signing/
-build/
-*.idsig
