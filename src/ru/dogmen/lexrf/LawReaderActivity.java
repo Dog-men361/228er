@@ -20,8 +20,19 @@ import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.BaseAdapter;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.view.ViewGroup;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.json.JSONTokener;
 
 public final class LawReaderActivity extends Activity {
     static final String TITLE = "title";
@@ -33,9 +44,49 @@ public final class LawReaderActivity extends Activity {
     private WebView reader;
     private EditText search;
     private TextView status;
+    private TextView articleHeading;
+    private Button viewMode;
+    private ListView list;
+    private final ArrayList<Entry> entries = new ArrayList<>();
+    private final ArrayList<Entry> filtered = new ArrayList<>();
+    private final HashMap<String, String> articleTitles = new HashMap<>();
+    private BaseAdapter adapter;
+    private String lawName;
+    private int foreground;
+    private int secondary;
+    private int textZoom;
+    private int loadGeneration;
+    private String pendingArticle;
     private String contentsUrl;
     private boolean pageReady;
     private boolean loadFailed;
+
+    private static final Pattern ARTICLE = Pattern.compile("(?iu)\\bСтатья\\s+(\\d+(?:[.\u2011-]\\d+)*)(?:[.\\s]+|$)(.*)");
+    private static final Pattern GROUP = Pattern.compile("(?iu)\\b(?:Раздел|Подраздел|Глава|Часть)\\s+(?:[IVXLCDM]+|[0-9]+|[а-я]+ая)(?:\\b|\\.)");
+    private static final String INSPECT_PAGE = "(function(){"
+            + "var clean=function(s){return (s||'').replace(/\\s+/g,' ').trim()};"
+            + "var heading=Array.from(document.querySelectorAll('h1,h2')).map(function(e){return clean(e.innerText)});"
+            + "var address=function(e){try{return new URL(e.getAttribute('href')||e.dataset.href,location.href).href}catch(err){return ''}};"
+            + "var links=Array.from(document.querySelectorAll('a[href],[data-href]')).map(function(e){"
+            + "return [clean(e.innerText||e.textContent),address(e),false]});"
+            + "document.querySelectorAll('li').forEach(function(li){"
+            + "var caption=clean(Array.from(li.childNodes).filter(function(n){return !/^(UL|OL)$/.test(n.nodeName)}).map(function(n){return n.textContent}).join(' '));"
+            + "if(!/^Статья\\s+\\d/i.test(caption)||Array.from(li.children).some(function(e){return e.matches('a[href],[data-href]')}))return;"
+            + "for(var group=li.parentElement.closest('li');group;group=group.parentElement.closest('li')){"
+            + "var link=Array.from(group.children).find(function(e){return e.matches('a[href],[data-href]')});"
+            + "if(link){links.push([caption,address(link),true]);break}}});"
+            + "return JSON.stringify({heading:heading,links:links.filter(Boolean)});})()";
+
+    private static final class Entry {
+        final String caption;
+        final String url;
+        final boolean throughChapter;
+        Entry(String caption, String url, boolean throughChapter) {
+            this.caption = caption;
+            this.url = url;
+            this.throughChapter = throughChapter;
+        }
+    }
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -48,8 +99,10 @@ public final class LawReaderActivity extends Activity {
 
         boolean light = intent.getBooleanExtra(LIGHT, false);
         int background = Color.parseColor(light ? "#F0F2F8" : "#10131D");
-        int foreground = Color.parseColor(light ? "#152037" : "#F2F5FF");
-        int secondary = Color.parseColor(light ? "#526077" : "#AAB5CE");
+        foreground = Color.parseColor(light ? "#152037" : "#F2F5FF");
+        secondary = Color.parseColor(light ? "#526077" : "#AAB5CE");
+        textZoom = intent.getIntExtra(ZOOM, 100);
+        lawName = intent.getStringExtra(TITLE);
         getWindow().setStatusBarColor(background);
         getWindow().setNavigationBarColor(background);
         if (light) getWindow().getDecorView().setSystemUiVisibility(
@@ -63,12 +116,16 @@ public final class LawReaderActivity extends Activity {
         LinearLayout header = row(layout);
         header.addView(button("‹", "Назад", this::onBackPressed));
         TextView title = new TextView(this);
-        title.setText(intent.getStringExtra(TITLE));
+        title.setText(lawName);
         title.setTextColor(foreground);
         title.setTextSize(19);
         title.setPadding(dp(8), 0, dp(8), 0);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        header.addView(button("Оглавление", "Открыть оглавление", () -> reader.loadUrl(contentsUrl)));
+        header.addView(button("Оглавление", "Открыть оглавление", () -> {
+            pendingArticle = null;
+            search.setText("");
+            reader.loadUrl(contentsUrl);
+        }));
 
         LinearLayout tools = row(layout);
         search = new EditText(this);
@@ -76,12 +133,12 @@ public final class LawReaderActivity extends Activity {
         search.setTextColor(foreground);
         search.setHintTextColor(secondary);
         search.setTextSize(15);
-        search.setHint("Номер или слово на странице");
+        search.setHint("Номер или название статьи");
         search.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         search.setText(saved == null ? intent.getStringExtra(TERM) : saved.getString(TERM));
         tools.addView(search, new LinearLayout.LayoutParams(0, -2, 1));
-        tools.addView(button("↑", "Предыдущее совпадение", () -> reader.findNext(false)));
-        tools.addView(button("↓", "Следующее совпадение", () -> reader.findNext(true)));
+        tools.addView(button("↑", "Предыдущее совпадение", () -> { if (reader.isShown()) reader.findNext(false); }));
+        tools.addView(button("↓", "Следующее совпадение", () -> { if (reader.isShown()) reader.findNext(true); }));
         search.setOnEditorActionListener((view, action, event) -> {
             if (action != EditorInfo.IME_ACTION_SEARCH) return false;
             ((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE))
@@ -97,12 +154,53 @@ public final class LawReaderActivity extends Activity {
         status.setTextSize(13);
         status.setPadding(dp(8), 0, dp(4), 0);
         source.addView(status, new LinearLayout.LayoutParams(0, -2, 1));
-        source.addView(button("В браузере", "Открыть страницу в браузере", this::openBrowser));
+        viewMode = button("Источник", "Переключить вид документа", this::toggleView);
+        viewMode.setVisibility(View.GONE);
+        source.addView(viewMode);
+        source.addView(button("↗", "Открыть страницу в браузере", this::openBrowser));
+
+        articleHeading = new TextView(this);
+        articleHeading.setTextColor(foreground);
+        articleHeading.setTextSize(20 * textZoom / 100f);
+        articleHeading.setPadding(dp(14), dp(8), dp(14), dp(8));
+        articleHeading.setVisibility(View.GONE);
+        layout.addView(articleHeading);
+
+        list = new ListView(this);
+        list.setVisibility(View.GONE);
+        adapter = new BaseAdapter() {
+            @Override public int getCount() { return filtered.size(); }
+            @Override public Entry getItem(int index) { return filtered.get(index); }
+            @Override public long getItemId(int index) { return index; }
+            @Override public View getView(int index, View recycled, ViewGroup parent) {
+                TextView row = recycled instanceof TextView ? (TextView) recycled : new TextView(LawReaderActivity.this);
+                row.setTextColor(foreground);
+                row.setTextSize(16 * textZoom / 100f);
+                row.setPadding(dp(16), dp(12), dp(16), dp(12));
+                row.setMinHeight(dp(52));
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                Entry entry = getItem(index);
+                row.setText(ARTICLE.matcher(entry.caption).find() ? articleLabel(entry.caption) : entry.caption);
+                return row;
+            }
+        };
+        list.setAdapter(adapter);
+        list.setOnItemClickListener((parent, view, position, id) -> {
+            Entry entry = filtered.get(position);
+            pendingArticle = entry.throughChapter ? articleNumber(entry.caption) : null;
+            if (!entry.throughChapter && articleNumber(entry.caption) != null) {
+                articleTitles.put(documentPath(entry.url), entry.caption);
+            }
+            search.setText("");
+            reader.loadUrl(entry.url);
+        });
+        layout.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
 
         reader = new WebView(this);
         reader.getSettings().setAllowFileAccess(false);
         reader.getSettings().setAllowContentAccess(false);
-        reader.getSettings().setTextZoom(intent.getIntExtra(ZOOM, 100));
+        reader.getSettings().setJavaScriptEnabled(true);
+        reader.getSettings().setTextZoom(textZoom);
         reader.getSettings().setBuiltInZoomControls(true);
         reader.getSettings().setDisplayZoomControls(false);
         if (Build.VERSION.SDK_INT >= 33) reader.getSettings().setAlgorithmicDarkeningAllowed(!light);
@@ -123,8 +221,14 @@ public final class LawReaderActivity extends Activity {
             }
 
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) {
+                loadGeneration++;
                 pageReady = false;
                 loadFailed = false;
+                entries.clear();
+                viewMode.setVisibility(View.GONE);
+                showSource();
+                String caption = articleTitles.get(documentPath(url));
+                setArticleHeading(caption);
                 status.setText("Загрузка документа…");
             }
 
@@ -132,6 +236,7 @@ public final class LawReaderActivity extends Activity {
                 if (loadFailed || !isDocument(url)) return;
                 pageReady = true;
                 findOnPage();
+                inspectPage(url);
             }
 
             @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
@@ -146,6 +251,98 @@ public final class LawReaderActivity extends Activity {
         if (saved == null || reader.restoreState(saved) == null) reader.loadUrl(contentsUrl);
         layout.setFocusableInTouchMode(true);
         layout.requestFocus();
+    }
+
+    private String documentPath(String url) { return Uri.parse(url).getPath(); }
+
+    private String articleNumber(String title) {
+        Matcher matcher = ARTICLE.matcher(title);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private String articleLabel(String caption) {
+        Matcher matcher = ARTICLE.matcher(caption);
+        if (!matcher.find()) return caption;
+        String title = matcher.group(2).trim();
+        return lawName + " · Статья " + matcher.group(1) + (title.isEmpty() ? "" : "\n" + title);
+    }
+
+    private void setArticleHeading(String caption) {
+        articleHeading.setVisibility(caption == null ? View.GONE : View.VISIBLE);
+        if (caption != null) articleHeading.setText(articleLabel(caption));
+    }
+
+    private void inspectPage(String url) {
+        int generation = loadGeneration;
+        reader.evaluateJavascript(INSPECT_PAGE, result -> {
+            if (generation != loadGeneration || !pageReady || isFinishing()) return;
+            try {
+                Object encoded = new JSONTokener(result).nextValue();
+                if (!(encoded instanceof String)) return;
+                JSONObject page = new JSONObject((String)encoded);
+                String caption = articleTitles.get(documentPath(url));
+                JSONArray headings = page.getJSONArray("heading");
+                for (int i = 0; caption == null && i < headings.length(); i++) {
+                    String heading = headings.getString(i);
+                    if (ARTICLE.matcher(heading).find()) caption = heading;
+                }
+                if (caption != null) {
+                    setArticleHeading(caption);
+                    return;
+                }
+
+                JSONArray links = page.getJSONArray("links");
+                java.util.HashSet<String> seen = new java.util.HashSet<>();
+                String scope = documentPath(contentsUrl);
+                for (int i = 0; i < links.length(); i++) {
+                    JSONArray pair = links.getJSONArray(i);
+                    String title = pair.getString(0);
+                    String target = pair.getString(1);
+                    boolean throughChapter = pair.optBoolean(2, false);
+                    if (!isDocument(target) || title.length() > 900) continue;
+                    String path = documentPath(target);
+                    if (path == null || !path.regionMatches(true, 0, scope, 0, scope.length())
+                            || path.equalsIgnoreCase(documentPath(url))) continue;
+                    String number = articleNumber(title);
+                    if (number != null && number.equals(pendingArticle) && !throughChapter) {
+                        pendingArticle = null;
+                        articleTitles.put(path, title);
+                        reader.loadUrl(target);
+                        return;
+                    }
+                    if (number == null && !GROUP.matcher(title).find()) continue;
+                    if (seen.add(number == null ? path : "article:" + number)) {
+                        entries.add(new Entry(title, target, throughChapter));
+                    }
+                }
+                if (pendingArticle != null) {
+                    search.setText(pendingArticle);
+                    pendingArticle = null;
+                }
+                if (!entries.isEmpty()) {
+                    viewMode.setVisibility(View.VISIBLE);
+                    showList();
+                }
+            } catch (Exception ignored) {
+                // The unmodified document remains available if the source changes its markup.
+            }
+        });
+    }
+
+    private void toggleView() { if (list.isShown()) showSource(); else showList(); }
+
+    private void showSource() {
+        list.setVisibility(View.GONE);
+        reader.setVisibility(View.VISIBLE);
+        viewMode.setText("Список");
+        findOnPage();
+    }
+
+    private void showList() {
+        reader.setVisibility(View.GONE);
+        list.setVisibility(View.VISIBLE);
+        viewMode.setText("Источник");
+        findOnPage();
     }
 
     private boolean isDocument(String value) {
@@ -167,6 +364,16 @@ public final class LawReaderActivity extends Activity {
     private void findOnPage() {
         if (!pageReady) return;
         String term = search.getText().toString().trim();
+        if (list.isShown()) {
+            String filter = term.toLowerCase(Locale.ROOT).replace('ё', 'е');
+            filtered.clear();
+            for (Entry entry : entries) {
+                if (entry.caption.toLowerCase(Locale.ROOT).replace('ё', 'е').contains(filter)) filtered.add(entry);
+            }
+            adapter.notifyDataSetChanged();
+            status.setText(filtered.isEmpty() ? "Откройте нужную главу или источник" : "Позиций: " + filtered.size());
+            return;
+        }
         if (term.isEmpty()) {
             reader.clearMatches();
             status.setText("Источник · КонсультантПлюс");

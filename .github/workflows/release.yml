@@ -5,13 +5,15 @@ on:
     branches: [main]
     tags: ['v*']
 concurrency:
-  group: lexrf-release-${{ github.ref }}
+  group: lexrf-release
   cancel-in-progress: false
 permissions:
   contents: write
 jobs:
   apk:
     runs-on: ubuntu-latest
+    env:
+      SIGNING_READY: ${{ secrets.LEXRF_KEYSTORE_BASE64 != '' && secrets.LEXRF_KEY_PASSWORD != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -21,34 +23,69 @@ jobs:
       - uses: android-actions/setup-android@v3
       - name: Install SDK
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Read version
+        run: |
+          VERSION=$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' AndroidManifest.xml)
+          CODE=$(sed -n 's/.*android:versionCode="\([^"]*\)".*/\1/p' AndroidManifest.xml)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$CODE" =~ ^[0-9]+$ ]]
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo 'Tag and versionName must match'; exit 1
+          fi
+          printf 'VERSION=%s\nCODE=%s\nASSET=LexRF-%s.apk\n' "$VERSION" "$CODE" "$VERSION" >> "$GITHUB_ENV"
       - name: Restore signing key
+        if: env.SIGNING_READY == 'true'
         env:
           KEY_BASE64: ${{ secrets.LEXRF_KEYSTORE_BASE64 }}
         run: |
           test -n "$KEY_BASE64"
           printf '%s' "$KEY_BASE64" | base64 -d > "$RUNNER_TEMP/lexrf.p12"
       - name: Build
+        if: env.SIGNING_READY == 'true'
         shell: pwsh
         env:
           LEXRF_KEYSTORE: ${{ runner.temp }}/lexrf.p12
           LEXRF_KEY_PASSWORD: ${{ secrets.LEXRF_KEY_PASSWORD }}
-        run: ./build.ps1 -Output "$PWD/LexRF.apk"
+        run: ./build.ps1 -Output "$PWD/$env:ASSET"
+      - name: Read pre-signed APK from update channel
+        if: env.SIGNING_READY != 'true'
+        run: |
+          git fetch origin updates:refs/remotes/origin/updates
+          git show "origin/updates:$ASSET" > "$ASSET"
+          EXPECTED=$(git show origin/updates:latest.json | jq -er --arg v "$VERSION" --argjson c "$CODE" \
+            'select(.version == $v and .versionCode == $c) | .sha256')
+          printf '%s  %s\n' "$EXPECTED" "$ASSET" | sha256sum -c -
+      - name: Verify APK package and signing certificate
+        run: |
+          TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          "$TOOLS/apksigner" verify --print-certs "$ASSET" | grep -Fx 'Signer #1 certificate SHA-256 digest: f55bf36399677f5c43d494e143a7d49982de477b32a6bbb922db21b14198838b'
+          "$TOOLS/aapt" dump badging "$ASSET" > "$RUNNER_TEMP/badging"
+          grep -F "package: name='ru.dogmen.lexrf' versionCode='$CODE' versionName='$VERSION'" "$RUNNER_TEMP/badging"
+      - name: Publish automatic update channel
+        if: env.SIGNING_READY == 'true'
+        run: |
+          git fetch origin updates:refs/remotes/origin/updates
+          CHANNEL="$RUNNER_TEMP/lexrf-channel"
+          git worktree add --detach "$CHANNEL" origin/updates
+          CURRENT=$(jq -er '.versionCode' "$CHANNEL/latest.json")
+          if (( CODE <= CURRENT )); then exit 0; fi
+          cp "$ASSET" "$CHANNEL/$ASSET"
+          SHA=$(sha256sum "$ASSET" | cut -d ' ' -f1)
+          jq -n --arg version "$VERSION" --argjson versionCode "$CODE" --arg sha256 "$SHA" \
+            '{version:$version,versionCode:$versionCode,sha256:$sha256}' > "$CHANNEL/latest.json"
+          git -C "$CHANNEL" add -f -- "$ASSET" latest.json
+          git -C "$CHANNEL" -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Publish LexRF $VERSION"
+          git -C "$CHANNEL" push origin HEAD:refs/heads/updates
       - uses: actions/upload-artifact@v4
         with:
           name: LexRF-apk
-          path: LexRF.apk
+          path: ${{ env.ASSET }}
       - name: Publish app version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION=$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' AndroidManifest.xml)
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           TAG="v$VERSION"
-          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$TAG" ]]; then
-            echo 'Tag and versionName must match'; exit 1
-          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "$TAG already published; increment versionCode and versionName for a new release."
           else
-            gh release create "$TAG" LexRF.apk --target "$GITHUB_SHA" --generate-notes
+            gh release create "$TAG" "$ASSET" --target "$GITHUB_SHA" --generate-notes
           fi

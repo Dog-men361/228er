@@ -17,10 +17,8 @@ import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.*;
 import java.io.*;
-import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private final ArrayList<Code> codes = new ArrayList<>();
@@ -32,8 +30,8 @@ public class MainActivity extends Activity {
     private String screen = "home", selectedCode = "", query = "";
     private Article selectedArticle;
     private static final String OFFICIAL = "https://pravo.gov.ru/";
-    private static final String VERSION = "1.1.0";
-    private static final String DEFAULT_REPOSITORY = "Dog-men361/228er";
+    private static final String VERSION = "1.2.0";
+    private AppUpdates updates;
     private static final String NOTICE = "Справочная информация, не юридическое заключение. Применимость зависит от обстоятельств и действующей редакции закона. Проверьте полный текст и при необходимости обратитесь к юристу.";
 
     static class Code {
@@ -53,12 +51,17 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         prefs=getSharedPreferences("lexrf", MODE_PRIVATE);
+        updates=new AppUpdates(this,prefs);
         try {
             for(String[] f: load("codes.tsv",3)) codes.add(new Code(f));
             for(String[] f: load("articles.tsv",6)) articles.add(new Article(f));
         } catch(IOException e) { Toast.makeText(this,"Не удалось загрузить справочник",Toast.LENGTH_LONG).show(); }
         if(saved!=null) { query=saved.getString("query",""); }
         home();
+    }
+    @Override protected void onResume() {
+        super.onResume();
+        if (updates!=null) updates.check(false);
     }
     @Override protected void onSaveInstanceState(Bundle out) { out.putString("query",query); super.onSaveInstanceState(out); }
     private List<String[]> load(String asset,int count) throws IOException {
@@ -96,16 +99,20 @@ public class MainActivity extends Activity {
         LinearLayout bar=new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL);
         if(!page.equals("home")) { TextView back=button("‹",false,this::back); LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(dp(52),dp(46)); bp.rightMargin=dp(12); bar.addView(back,bp); }
         TextView brand=label("LexRF",21,text,true); bar.addView(brand,new LinearLayout.LayoutParams(0,-2,1));
-        TextView settings=button("⚙",false,this::settings); settings.setContentDescription("Настройки"); bar.addView(settings,new LinearLayout.LayoutParams(dp(54),dp(46))); add(root,bar,18);
+        if (!page.equals("settings")) {
+            TextView settings=button("⚙",false,this::settings);
+            settings.setContentDescription("Настройки");
+            bar.addView(settings,new LinearLayout.LayoutParams(dp(54),dp(46)));
+        }
+        add(root,bar,18);
         ScrollView scroll=new ScrollView(this); scroll.setFillViewport(false); scroll.setClipToPadding(false); body=column(); body.setPadding(0,0,0,dp(22)); scroll.addView(body); root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-        add(body,label(title,29,text,true),6); if(!sub.isEmpty())add(body,label(sub,15,muted,false),20);
+        if(!title.isEmpty())add(body,label(title,29,text,true),6);
+        if(!sub.isEmpty())add(body,label(sub,15,muted,false),20);
     }
     private void home() {
-        base("home","Закон простыми словами","Справочник по законодательству Российской Федерации");
-        LinearLayout hero=panel(body); add(hero,label("⚖  Ваш правовой навигатор",20,accent,true),8); add(hero,label("Подбирайте нормы офлайн и читайте полные тексты законов с интернетом.",16,text,false),0);
-        LinearLayout search=panel(body); add(search,label("01  Поиск",23,text,true),6); add(search,label("Опишите ситуацию своими словами и получите список возможных норм.",15,muted,false),14); add(search,button("Начать поиск  →",true,this::search),0);
-        LinearLayout list=panel(body); add(list,label("02  Список законов",23,text,true),6); add(list,label(codes.size()+" разделов с полными текстами",15,muted,false),14); add(list,button("Открыть справочник  →",false,this::catalog),0);
-        add(body,label(NOTICE,13,muted,false),10); add(body,label("Разработчик: Dog_men  ·  v"+VERSION,12,muted,false),0);
+        base("home","", "");
+        add(body,button("Поиск по ситуации",true,this::search),12);
+        add(body,button("Список законов",false,this::catalog),0);
     }
     private EditText input(String hint,String value,boolean multi) { EditText e=new EditText(this); e.setHint(hint); e.setText(value); e.setTextColor(text); e.setHintTextColor(muted); e.setTextSize(16*textScale); e.setGravity(Gravity.TOP|Gravity.START); e.setPadding(dp(15),dp(12),dp(15),dp(12)); e.setBackground(rounded(card,18,true)); e.setMinLines(multi?4:1); e.setMaxLines(multi?9:1); e.setInputType(multi?android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE|android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES:android.text.InputType.TYPE_CLASS_TEXT); return e; }
     private void search() {
@@ -169,20 +176,67 @@ public class MainActivity extends Activity {
         add(body,label("Локальная карточка — краткое пояснение, не полный текст статьи. Версия справочника: "+VERSION+".",14,muted,false),10); add(body,label(NOTICE,13,muted,false),0);
     }
     private void settings() {
-        base("settings","Настройки","Персонализация интерфейса и обновления"); LinearLayout p=panel(body);
-        add(p,label("Размер текста",18,text,true),7); TextView value=label(prefs.getInt("size",100)+"%",16,accent,true); add(p,value,5);
-        SeekBar slider=new SeekBar(this);slider.setMax(60);slider.setProgress(prefs.getInt("size",100)-80);slider.setProgressTintList(ColorStateList.valueOf(accent));slider.setThumbTintList(ColorStateList.valueOf(accent));add(p,slider,8);
-        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onStartTrackingTouch(SeekBar s){} public void onProgressChanged(SeekBar s,int v,boolean user){value.setText((v+80)+"%");}public void onStopTrackingTouch(SeekBar s){prefs.edit().putInt("size",s.getProgress()+80).apply();settings();}});
-        p=panel(body); add(p,label("Тема",18,text,true),10); add(p,button(prefs.getBoolean("light",false)?"Светлая · переключить на тёмную":"Тёмная · переключить на светлую",false,()->{prefs.edit().putBoolean("light",!prefs.getBoolean("light",false)).apply();settings();}),0);
-        p=panel(body); add(p,label("Акцентный цвет",18,text,true),10); String[] names={"Синий","Фиолетовый","Зелёный","Розовый","Янтарный","Бирюзовый"}; String[] colors={"#A4B9FF","#C6A4FF","#8EE1BB","#FFABC7","#FFC88A","#80D7E9"};
-        for(int i=0;i<names.length;i++){final int ix=i;TextView b=button(names[i]+(prefs.getInt("accent",0)==i?"  ✓":""),false,()->{prefs.edit().putInt("accent",ix).apply();settings();});b.setTextColor(Color.parseColor(colors[i])); if(prefs.getBoolean("light",false))b.setTextColor(text);add(p,b,7);}
-        p=panel(body); add(p,label("Обновления через GitHub",18,text,true),8); add(p,label("Версия: "+VERSION+". Репозиторий LexRF подключён по умолчанию. Новые APK устанавливаются с подтверждением Android.",14,muted,false),12);
-        EditText repo=input("owner/repository",prefs.getString("repository",DEFAULT_REPOSITORY),false);add(p,repo,10);add(p,button("Сохранить репозиторий",false,()->saveRepo(repo.getText().toString())),8);add(p,button("Проверить обновления",true,()->{if(saveRepo(repo.getText().toString()))checkUpdates();}),0);
-        add(body,label("Поисковые запросы обрабатываются на устройстве и не отправляются на сервер. Ссылки открываются в браузере.",13,muted,false),0);
+        base("settings","Настройки", "");
+        LinearLayout appearance=panel(body);
+        add(appearance,label("Оформление",20,text,true),12);
+        Switch theme=settingSwitch("Светлая тема",prefs.getBoolean("light",false));
+        theme.setOnCheckedChangeListener((view,checked)->{
+            prefs.edit().putBoolean("light",checked).apply();
+            settings();
+        });
+        add(appearance,theme,10);
+        String[] names={"Синий","Фиолетовый","Зелёный","Розовый","Янтарный","Бирюзовый"};
+        int chosen=prefs.getInt("accent",0);
+        add(appearance,button("Цвет · "+names[chosen],false,()->new AlertDialog.Builder(this)
+                .setTitle("Акцентный цвет")
+                .setSingleChoiceItems(names,chosen,(dialog,index)->{
+                    prefs.edit().putInt("accent",index).apply();
+                    dialog.dismiss();
+                    settings();
+                }).setNegativeButton("Закрыть",null).show()),12);
+
+        TextView size=label("Размер текста · "+prefs.getInt("size",100)+"%",16,text,true);
+        add(appearance,size,0);
+        SeekBar slider=new SeekBar(this);
+        slider.setMax(60);
+        slider.setProgress(prefs.getInt("size",100)-80);
+        slider.setContentDescription("Размер текста");
+        slider.setProgressTintList(ColorStateList.valueOf(accent));
+        slider.setThumbTintList(ColorStateList.valueOf(accent));
+        add(appearance,slider,4);
+        TextView sample=label("Пример текста статьи",16,muted,false);
+        add(appearance,sample,0);
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            @Override public void onStartTrackingTouch(SeekBar s) { }
+            @Override public void onProgressChanged(SeekBar s,int progress,boolean user) {
+                int percent=progress+80;
+                size.setText("Размер текста · "+percent+"%");
+                sample.setTextSize(16*percent/100f);
+                if(user)prefs.edit().putInt("size",percent).apply();
+            }
+            @Override public void onStopTrackingTouch(SeekBar s) { }
+        });
+
+        LinearLayout updatePanel=panel(body);
+        add(updatePanel,label("Обновления",20,text,true),8);
+        Switch automatic=settingSwitch("Скачивать автоматически",prefs.getBoolean("auto_update",true));
+        automatic.setOnCheckedChangeListener((view,checked)->{
+            prefs.edit().putBoolean("auto_update",checked).apply();
+            if(checked)updates.check(false);
+        });
+        add(updatePanel,automatic,8);
+        add(updatePanel,label("Версия "+VERSION+" · проверка при открытии приложения",14,muted,false),12);
+        add(updatePanel,button("Проверить сейчас",false,()->updates.check(true)),0);
     }
-    private boolean saveRepo(String raw) {String r=raw.trim().replaceFirst("^https://github\\.com/","").replaceFirst("/+$","").replaceFirst("\\.git$",""); if(!r.matches("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")){Toast.makeText(this,"Введите owner/repository",Toast.LENGTH_SHORT).show();return false;}prefs.edit().putString("repository",r).apply();return true;}
-    private void checkUpdates() {String repo=prefs.getString("repository","");Toast.makeText(this,"Проверяем GitHub…",Toast.LENGTH_SHORT).show();new Thread(()->{HttpURLConnection con=null;try{con=(HttpURLConnection)new URL("https://api.github.com/repos/"+repo+"/releases/latest").openConnection();con.setConnectTimeout(8000);con.setReadTimeout(8000);con.setRequestProperty("Accept","application/vnd.github+json");con.setRequestProperty("User-Agent","LexRF-Android");if(con.getResponseCode()!=200)throw new IOException("No release");StringBuilder sb=new StringBuilder();try(BufferedReader b=new BufferedReader(new InputStreamReader(con.getInputStream(),StandardCharsets.UTF_8))){String line;while((line=b.readLine())!=null)sb.append(line);}JSONObject json=new JSONObject(sb.toString());String tag=json.getString("tag_name");String release="https://github.com/"+repo+"/releases/latest";runOnUiThread(()->{if(isFinishing())return;if(newer(tag,VERSION))new AlertDialog.Builder(this).setTitle("Доступно обновление "+tag).setMessage("Скачайте APK из релиза и подтвердите установку. Android проверит подпись приложения.").setPositiveButton("Открыть релиз",(d,w)->open(release)).setNegativeButton("Позже",null).show();else Toast.makeText(this,"Установлена актуальная версия",Toast.LENGTH_LONG).show();});}catch(Exception e){runOnUiThread(()->{if(!isFinishing())new AlertDialog.Builder(this).setTitle("Не удалось проверить").setMessage("Проверьте интернет, адрес репозитория и наличие публичного релиза.").setPositiveButton("Релизы",(d,w)->open("https://github.com/"+repo+"/releases")).setNegativeButton("Закрыть",null).show();});}finally{if(con!=null)con.disconnect();}}).start();}
-    private boolean newer(String remote,String local){String[] a=remote.replaceFirst("^[vV]","").split("[.-]"),b=local.split("[.-]");try{for(int i=0;i<3;i++){int x=i<a.length?Integer.parseInt(a[i]):0,y=i<b.length?Integer.parseInt(b[i]):0;if(x!=y)return x>y;}}catch(NumberFormatException ignored){}return false;}
+    private Switch settingSwitch(String caption,boolean checked) {
+        Switch view=new Switch(this);
+        view.setText(caption);
+        view.setTextColor(text);
+        view.setTextSize(16*textScale);
+        view.setMinHeight(dp(48));
+        view.setChecked(checked);
+        return view;
+    }
     private void open(String link){try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(link)));}catch(Exception e){Toast.makeText(this,"Браузер недоступен",Toast.LENGTH_SHORT).show();}}
     private void back(){switch(screen){case "article":if(articleOrigin.equals("search"))search();else{Code c=findCode(selectedArticle.code);if(c!=null)code(c);else catalog();}break;case "code":catalog();break;case "home":finish();break;default:home();}}
     @Override public void onBackPressed(){back();}
