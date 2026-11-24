@@ -32,13 +32,14 @@ public class MainActivity extends Activity {
     private String screen = "home", selectedCode = "", query = "";
     private Article selectedArticle;
     private static final String OFFICIAL = "https://pravo.gov.ru/";
-    private static final String VERSION = "1.0.1";
+    private static final String VERSION = "1.1.0";
     private static final String DEFAULT_REPOSITORY = "Dog-men361/228er";
     private static final String NOTICE = "Справочная информация, не юридическое заключение. Применимость зависит от обстоятельств и действующей редакции закона. Проверьте полный текст и при необходимости обратитесь к юристу.";
 
     static class Code {
-        final String name, description, url;
-        Code(String[] f) { name=f[0]; description=f[1]; url=f[2]; }
+        final String name, description;
+        final String[] documents;
+        Code(String[] f) { name=f[0]; description=f[1]; documents=f[2].split(";"); }
     }
     static class Article {
         final String code, number, title, summary, conditions;
@@ -101,9 +102,9 @@ public class MainActivity extends Activity {
     }
     private void home() {
         base("home","Закон простыми словами","Справочник по законодательству Российской Федерации");
-        LinearLayout hero=panel(body); add(hero,label("⚖  Ваш правовой навигатор",20,accent,true),8); add(hero,label("Опишите ситуацию или найдите нужную статью. Основной справочник работает без интернета.",16,text,false),0);
+        LinearLayout hero=panel(body); add(hero,label("⚖  Ваш правовой навигатор",20,accent,true),8); add(hero,label("Подбирайте нормы офлайн и читайте полные тексты законов с интернетом.",16,text,false),0);
         LinearLayout search=panel(body); add(search,label("01  Поиск",23,text,true),6); add(search,label("Опишите ситуацию своими словами и получите список возможных норм.",15,muted,false),14); add(search,button("Начать поиск  →",true,this::search),0);
-        LinearLayout list=panel(body); add(list,label("02  Список законов",23,text,true),6); add(list,label(codes.size()+" разделов · "+articles.size()+" справочных карточек",15,muted,false),14); add(list,button("Открыть справочник  →",false,this::catalog),0);
+        LinearLayout list=panel(body); add(list,label("02  Список законов",23,text,true),6); add(list,label(codes.size()+" разделов с полными текстами",15,muted,false),14); add(list,button("Открыть справочник  →",false,this::catalog),0);
         add(body,label(NOTICE,13,muted,false),10); add(body,label("Разработчик: Dog_men  ·  v"+VERSION,12,muted,false),0);
     }
     private EditText input(String hint,String value,boolean multi) { EditText e=new EditText(this); e.setHint(hint); e.setText(value); e.setTextColor(text); e.setHintTextColor(muted); e.setTextSize(16*textScale); e.setGravity(Gravity.TOP|Gravity.START); e.setPadding(dp(15),dp(12),dp(15),dp(12)); e.setBackground(rounded(card,18,true)); e.setMinLines(multi?4:1); e.setMaxLines(multi?9:1); e.setInputType(multi?android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE|android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES:android.text.InputType.TYPE_CLASS_TEXT); return e; }
@@ -131,14 +132,32 @@ public class MainActivity extends Activity {
     private void articleCard(LinearLayout parent,Article a,Runnable action) { LinearLayout p=panel(parent); add(p,label(a.code+" · Статья "+a.number,14,accent,true),5); add(p,label(a.title,19,text,true),6); add(p,label(a.summary,15,muted,false),0); p.setClickable(true); p.setFocusable(true); p.setOnClickListener(v->action.run()); }
     private void catalog() {
         base("catalog","Список законов","Выберите раздел, чтобы открыть статьи и полный текст документа");
-        for(Code c:codes) { LinearLayout p=panel(body); add(p,label(c.name,21,text,true),5); add(p,label(c.description,15,muted,false),8); int count=0; for(Article a:articles)if(a.code.equals(c.name))count++; add(p,label(count+" карточек   →",14,accent,true),0); p.setClickable(true); p.setFocusable(true); p.setOnClickListener(v->code(c)); }
+        for(Code c:codes) { LinearLayout p=panel(body); add(p,label(c.name,21,text,true),5); add(p,label(c.description,15,muted,false),8); add(p,label("Все статьи   →",14,accent,true),0); p.setClickable(true); p.setFocusable(true); p.setOnClickListener(v->code(c)); }
         add(body,button("Официальный портал правовой информации",false,()->open(OFFICIAL)),8);
     }
     private Code findCode(String name) { for(Code c:codes)if(c.name.equals(name))return c; return null; }
     private void code(Code c) {
-        selectedCode=c.name; base("code",c.name,c.description); add(body,button("Читать полный текст закона ↗",true,()->open(c.url)),12);
+        selectedCode=c.name;
+        base("code",c.name,c.description);
+        add(body,label("Полный текст и оглавление · требуется интернет",15,muted,false),10);
+        for(int i=0;i<c.documents.length;i++) {
+            final int part=i;
+            String caption=c.documents.length==1?"Все статьи": "Все статьи · часть "+(i+1);
+            add(body,button(caption,true,()->readLaw(c,part,"")),8);
+        }
+        add(body,label("Краткие пояснения · офлайн",18,text,true),8);
         EditText f=input("Номер или название статьи","",false); add(body,f,12); LinearLayout list=column(); add(body,list,0); showCodeArticles(c,"",list);
         f.addTextChangedListener(new TextWatcher(){ public void beforeTextChanged(CharSequence s,int st,int c,int a){} public void onTextChanged(CharSequence s,int st,int b,int c1){showCodeArticles(c,s.toString(),list);} public void afterTextChanged(Editable e){} });
+    }
+    private void readLaw(Code code,int part,String term) {
+        Intent intent=new Intent(this,LawReaderActivity.class);
+        String title=code.name+(code.documents.length==1?"":" · часть "+(part+1));
+        intent.putExtra(LawReaderActivity.TITLE,title);
+        intent.putExtra(LawReaderActivity.URL,code.documents[part]);
+        intent.putExtra(LawReaderActivity.TERM,term);
+        intent.putExtra(LawReaderActivity.ZOOM,prefs.getInt("size",100));
+        intent.putExtra(LawReaderActivity.LIGHT,prefs.getBoolean("light",false));
+        startActivity(intent);
     }
     private void showCodeArticles(Code c,String filter,LinearLayout list) { list.removeAllViews(); String f=norm(filter); int count=0; for(Article a:articles){if(a.code.equals(c.name)&&(f.isEmpty()||norm(a.number+" "+a.title+" "+a.summary).contains(f))){articleCard(list,a,()->article(a));count++;}} if(count==0)add(list,label("Нет совпадений в локальной подборке. Откройте полный текст закона.",15,muted,false),10); }
     private String articleOrigin="catalog";
@@ -146,7 +165,7 @@ public class MainActivity extends Activity {
         articleOrigin=screen; selectedArticle=a; base("article","Статья "+a.number,a.code+" · "+a.title);
         LinearLayout p=panel(body); add(p,label("Что регулирует",18,accent,true),8); add(p,label(a.summary,17,text,false),0);
         p=panel(body); add(p,label("Что необходимо проверить",18,accent,true),8); add(p,label(a.conditions,17,text,false),0);
-        Code c=findCode(a.code); if(c!=null)add(body,button("Полный текст документа ↗",true,()->open(c.url)),10); add(body,button("Официальный источник ↗",false,()->open(OFFICIAL)),10);
+        Code c=findCode(a.code); if(c!=null)add(body,button("Найти статью в полном оглавлении",true,()->readLaw(c,0,"Статья "+a.number+".")),10); add(body,button("Официальный источник ↗",false,()->open(OFFICIAL)),10);
         add(body,label("Локальная карточка — краткое пояснение, не полный текст статьи. Версия справочника: "+VERSION+".",14,muted,false),10); add(body,label(NOTICE,13,muted,false),0);
     }
     private void settings() {
