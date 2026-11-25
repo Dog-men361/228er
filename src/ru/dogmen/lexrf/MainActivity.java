@@ -30,7 +30,7 @@ public class MainActivity extends Activity {
     private String screen = "home", selectedCode = "", query = "";
     private Article selectedArticle;
     private static final String OFFICIAL = "https://pravo.gov.ru/";
-    private static final String VERSION = "1.2.0";
+    private static final String VERSION = "1.2.1";
     private AppUpdates updates;
     private static final String NOTICE = "Справочная информация, не юридическое заключение. Применимость зависит от обстоятельств и действующей редакции закона. Проверьте полный текст и при необходимости обратитесь к юристу.";
 
@@ -105,14 +105,18 @@ public class MainActivity extends Activity {
             bar.addView(settings,new LinearLayout.LayoutParams(dp(54),dp(46)));
         }
         add(root,bar,18);
-        ScrollView scroll=new ScrollView(this); scroll.setFillViewport(false); scroll.setClipToPadding(false); body=column(); body.setPadding(0,0,0,dp(22)); scroll.addView(body); root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        ScrollView scroll=new ScrollView(this); scroll.setFillViewport(page.equals("home")); scroll.setClipToPadding(false); body=column(); body.setPadding(0,0,0,dp(22)); scroll.addView(body); root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         if(!title.isEmpty())add(body,label(title,29,text,true),6);
         if(!sub.isEmpty())add(body,label(sub,15,muted,false),20);
     }
     private void home() {
         base("home","", "");
-        add(body,button("Поиск по ситуации",true,this::search),12);
-        add(body,button("Список законов",false,this::catalog),0);
+        body.setGravity(Gravity.CENTER);
+        LinearLayout actions=column();
+        int width=Math.min(dp(420),getResources().getDisplayMetrics().widthPixels-dp(36));
+        body.addView(actions,new LinearLayout.LayoutParams(width,-2));
+        add(actions,button("Поиск по ситуации",true,this::search),12);
+        add(actions,button("Список законов",false,this::catalog),0);
     }
     private EditText input(String hint,String value,boolean multi) { EditText e=new EditText(this); e.setHint(hint); e.setText(value); e.setTextColor(text); e.setHintTextColor(muted); e.setTextSize(16*textScale); e.setGravity(Gravity.TOP|Gravity.START); e.setPadding(dp(15),dp(12),dp(15),dp(12)); e.setBackground(rounded(card,18,true)); e.setMinLines(multi?4:1); e.setMaxLines(multi?9:1); e.setInputType(multi?android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE|android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES:android.text.InputType.TYPE_CLASS_TEXT); return e; }
     private void search() {
@@ -144,17 +148,17 @@ public class MainActivity extends Activity {
     }
     private Code findCode(String name) { for(Code c:codes)if(c.name.equals(name))return c; return null; }
     private void code(Code c) {
+        if (c.documents.length==1) {
+            readLaw(c,0,"");
+            return;
+        }
         selectedCode=c.name;
         base("code",c.name,c.description);
-        add(body,label("Полный текст и оглавление · требуется интернет",15,muted,false),10);
+        add(body,label("Выберите часть кодекса",15,muted,false),10);
         for(int i=0;i<c.documents.length;i++) {
             final int part=i;
-            String caption=c.documents.length==1?"Все статьи": "Все статьи · часть "+(i+1);
-            add(body,button(caption,true,()->readLaw(c,part,"")),8);
+            add(body,button("Часть "+(i+1),true,()->readLaw(c,part,"")),8);
         }
-        add(body,label("Краткие пояснения · офлайн",18,text,true),8);
-        EditText f=input("Номер или название статьи","",false); add(body,f,12); LinearLayout list=column(); add(body,list,0); showCodeArticles(c,"",list);
-        f.addTextChangedListener(new TextWatcher(){ public void beforeTextChanged(CharSequence s,int st,int c,int a){} public void onTextChanged(CharSequence s,int st,int b,int c1){showCodeArticles(c,s.toString(),list);} public void afterTextChanged(Editable e){} });
     }
     private void readLaw(Code code,int part,String term) {
         Intent intent=new Intent(this,LawReaderActivity.class);
@@ -166,7 +170,6 @@ public class MainActivity extends Activity {
         intent.putExtra(LawReaderActivity.LIGHT,prefs.getBoolean("light",false));
         startActivity(intent);
     }
-    private void showCodeArticles(Code c,String filter,LinearLayout list) { list.removeAllViews(); String f=norm(filter); int count=0; for(Article a:articles){if(a.code.equals(c.name)&&(f.isEmpty()||norm(a.number+" "+a.title+" "+a.summary).contains(f))){articleCard(list,a,()->article(a));count++;}} if(count==0)add(list,label("Нет совпадений в локальной подборке. Откройте полный текст закона.",15,muted,false),10); }
     private String articleOrigin="catalog";
     private void article(Article a) {
         articleOrigin=screen; selectedArticle=a; base("article","Статья "+a.number,a.code+" · "+a.title);

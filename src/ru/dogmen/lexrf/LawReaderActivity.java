@@ -57,24 +57,35 @@ public final class LawReaderActivity extends Activity {
     private int textZoom;
     private int loadGeneration;
     private String pendingArticle;
+    private final java.util.HashSet<String> followed = new java.util.HashSet<>();
     private String contentsUrl;
     private boolean pageReady;
     private boolean loadFailed;
 
-    private static final Pattern ARTICLE = Pattern.compile("(?iu)\\bСтатья\\s+(\\d+(?:[.\u2011-]\\d+)*)(?:[.\\s]+|$)(.*)");
-    private static final Pattern GROUP = Pattern.compile("(?iu)\\b(?:Раздел|Подраздел|Глава|Часть)\\s+(?:[IVXLCDM]+|[0-9]+|[а-я]+ая)(?:\\b|\\.)");
+    private static final Pattern ARTICLE = Pattern.compile("(?iu)(?:^|\\s)Статья\\s+(\\d+(?:[.\u2010-\u2015\\-]\\d+)*)(?:[.\\s]+|$)(.*)");
+    private static final Pattern GROUP = Pattern.compile("(?iu)(?:^|\\s)(?:Раздел|Подраздел|Глава|Часть|Параграф)\\s+(?:[IVXLCDM]+|[0-9]+|[а-яё]+)(?:\\b|\\.)|^§\\s*\\d+");
     private static final String INSPECT_PAGE = "(function(){"
             + "var clean=function(s){return (s||'').replace(/\\s+/g,' ').trim()};"
             + "var heading=Array.from(document.querySelectorAll('h1,h2')).map(function(e){return clean(e.innerText)});"
             + "var address=function(e){try{return new URL(e.getAttribute('href')||e.dataset.href,location.href).href}catch(err){return ''}};"
-            + "var links=Array.from(document.querySelectorAll('a[href],[data-href]')).map(function(e){"
-            + "return [clean(e.innerText||e.textContent),address(e),false]});"
-            + "document.querySelectorAll('li').forEach(function(li){"
-            + "var caption=clean(Array.from(li.childNodes).filter(function(n){return !/^(UL|OL)$/.test(n.nodeName)}).map(function(n){return n.textContent}).join(' '));"
-            + "if(!/^Статья\\s+\\d/i.test(caption)||Array.from(li.children).some(function(e){return e.matches('a[href],[data-href]')}))return;"
-            + "for(var group=li.parentElement.closest('li');group;group=group.parentElement.closest('li')){"
-            + "var link=Array.from(group.children).find(function(e){return e.matches('a[href],[data-href]')});"
-            + "if(link){links.push([caption,address(link),true]);break}}});"
+            + "var article=/^Статья\\s+\\d/i, group=/^(?:Раздел|Подраздел|Глава|Часть|Параграф)\\s|^§\\s*\\d/i;"
+            + "var sameLaw=function(url){try{return new URL(url).pathname.toLowerCase().split('/')[2]===location.pathname.toLowerCase().split('/')[2]}catch(err){return false}};"
+            + "var selector='a[href],[data-href],li,span,div,p,td';"
+            + "var links=[], lastGroup='';"
+            + "document.querySelectorAll(selector).forEach(function(e){"
+            + "if(e.closest('footer,script,style'))return;"
+            + "var linked=e.matches('a[href],[data-href]');"
+            + "if(!linked&&e.closest('a[href],[data-href]'))return;"
+            + "var caption=clean(linked?e.textContent:Array.from(e.childNodes).filter(function(n){return n.nodeType===3||/^(SPAN|B|STRONG|I|EM|NOBR|SUP)$/.test(n.nodeName)}).map(function(n){return n.textContent}).join(' '));"
+            + "if(!caption||caption.length>900||!(article.test(caption)||group.test(caption)))return;"
+            + "var url=linked?address(e):'';"
+            + "if(linked&&sameLaw(url)&&new URL(url).pathname!==location.pathname&&group.test(caption))lastGroup=url;"
+            + "if(linked){if(sameLaw(url))links.push([caption,url,false]);return;}"
+            + "if(article.test(caption)){var nearest='';"
+            + "for(var parent=e.closest('li');parent;parent=parent.parentElement.closest('li')){"
+            + "var anchor=Array.from(parent.children).find(function(a){return a.matches('a[href],[data-href]')&&group.test(clean(a.textContent))&&sameLaw(address(a))});"
+            + "if(anchor){nearest=address(anchor);break;}}"
+            + "links.push([caption,nearest||lastGroup||location.href,true]);}});"
             + "return JSON.stringify({heading:heading,links:links.filter(Boolean)});})()";
 
     private static final class Entry {
@@ -123,6 +134,7 @@ public final class LawReaderActivity extends Activity {
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         header.addView(button("Оглавление", "Открыть оглавление", () -> {
             pendingArticle = null;
+            followed.clear();
             search.setText("");
             reader.loadUrl(contentsUrl);
         }));
@@ -188,6 +200,13 @@ public final class LawReaderActivity extends Activity {
         list.setOnItemClickListener((parent, view, position, id) -> {
             Entry entry = filtered.get(position);
             pendingArticle = entry.throughChapter ? articleNumber(entry.caption) : null;
+            followed.clear();
+            if (entry.throughChapter && documentPath(entry.url).equals(documentPath(reader.getUrl()))) {
+                showSource();
+                search.setText("Статья " + pendingArticle);
+                pendingArticle = null;
+                return;
+            }
             if (!entry.throughChapter && articleNumber(entry.caption) != null) {
                 articleTitles.put(documentPath(entry.url), entry.caption);
             }
@@ -212,7 +231,7 @@ public final class LawReaderActivity extends Activity {
             @Override public void afterTextChanged(Editable s) { }
         });
         reader.setFindListener((index, count, done) -> {
-            if (!done || !pageReady || search.getText().toString().trim().isEmpty()) return;
+            if (!done || !pageReady || !reader.isShown() || search.getText().toString().trim().isEmpty()) return;
             status.setText(count == 0 ? "На этой странице совпадений нет" : "Совпадение " + (index + 1) + " из " + count);
         });
         reader.setWebViewClient(new WebViewClient() {
@@ -253,11 +272,11 @@ public final class LawReaderActivity extends Activity {
         layout.requestFocus();
     }
 
-    private String documentPath(String url) { return Uri.parse(url).getPath(); }
+    private String documentPath(String url) { return url == null ? "" : Uri.parse(url).getPath(); }
 
     private String articleNumber(String title) {
         Matcher matcher = ARTICLE.matcher(title);
-        return matcher.find() ? matcher.group(1) : null;
+        return matcher.find() ? matcher.group(1).replaceAll("[\u2010-\u2015]", "-") : null;
     }
 
     private String articleLabel(String caption) {
@@ -292,7 +311,7 @@ public final class LawReaderActivity extends Activity {
                 }
 
                 JSONArray links = page.getJSONArray("links");
-                java.util.HashSet<String> seen = new java.util.HashSet<>();
+                java.util.LinkedHashMap<String, Entry> indexed = new java.util.LinkedHashMap<>();
                 String scope = documentPath(contentsUrl);
                 for (int i = 0; i < links.length(); i++) {
                     JSONArray pair = links.getJSONArray(i);
@@ -301,24 +320,31 @@ public final class LawReaderActivity extends Activity {
                     boolean throughChapter = pair.optBoolean(2, false);
                     if (!isDocument(target) || title.length() > 900) continue;
                     String path = documentPath(target);
-                    if (path == null || !path.regionMatches(true, 0, scope, 0, scope.length())
-                            || path.equalsIgnoreCase(documentPath(url))) continue;
+                    if (path == null || !path.regionMatches(true, 0, scope, 0, scope.length())) continue;
                     String number = articleNumber(title);
-                    if (number != null && number.equals(pendingArticle) && !throughChapter) {
-                        pendingArticle = null;
-                        articleTitles.put(path, title);
-                        reader.loadUrl(target);
-                        return;
-                    }
-                    if (number == null && !GROUP.matcher(title).find()) continue;
-                    if (seen.add(number == null ? path : "article:" + number)) {
-                        entries.add(new Entry(title, target, throughChapter));
-                    }
+                    if (number == null && (!GROUP.matcher(title).find() || path.equalsIgnoreCase(documentPath(url)))) continue;
+                    if (number != null && path.equalsIgnoreCase(documentPath(url))) throughChapter = true;
+                    String key = number == null ? path : "article:" + number;
+                    Entry previous = indexed.get(key);
+                    if (previous == null || previous.throughChapter && !throughChapter) indexed.put(key, new Entry(title, target, throughChapter));
                 }
                 if (pendingArticle != null) {
-                    search.setText(pendingArticle);
+                    Entry match = indexed.get("article:" + pendingArticle);
+                    followed.add(documentPath(url));
+                    if (match != null && !followed.contains(documentPath(match.url)) && followed.size() < 8) {
+                        if (!match.throughChapter) {
+                            articleTitles.put(documentPath(match.url), match.caption);
+                            pendingArticle = null;
+                        }
+                        reader.loadUrl(match.url);
+                        return;
+                    }
+                    search.setText("Статья " + pendingArticle);
                     pendingArticle = null;
+                    return;
                 }
+                entries.clear();
+                entries.addAll(indexed.values());
                 if (!entries.isEmpty()) {
                     viewMode.setVisibility(View.VISIBLE);
                     showList();
@@ -366,9 +392,12 @@ public final class LawReaderActivity extends Activity {
         String term = search.getText().toString().trim();
         if (list.isShown()) {
             String filter = term.toLowerCase(Locale.ROOT).replace('ё', 'е');
+            String exact = articleNumber(term);
+            if (exact == null && term.matches("\\d+(?:[.-]\\d+)*")) exact = term;
             filtered.clear();
             for (Entry entry : entries) {
-                if (entry.caption.toLowerCase(Locale.ROOT).replace('ё', 'е').contains(filter)) filtered.add(entry);
+                if (exact != null ? exact.equals(articleNumber(entry.caption))
+                        : entry.caption.toLowerCase(Locale.ROOT).replace('ё', 'е').contains(filter)) filtered.add(entry);
             }
             adapter.notifyDataSetChanged();
             status.setText(filtered.isEmpty() ? "Откройте нужную главу или источник" : "Позиций: " + filtered.size());
